@@ -85,7 +85,7 @@ public class StateFormService {
                             form = (String)l.get("class_path");
                             attrs = (String)l.get("form_attrs");
                             ClassUtil.AttributesProccessor.setCustomFormAttributes(form,
-                                    ClassUtil.AttributesProccessor.parseFieldAtributes(form, attrs));
+                                    ClassUtil.AttributesProccessor.parseFormCustomizedProperties(form, attrs));
                         } catch (Exception ex) {
                             log.error(String.format("Failed to load form custom attributes, form = %s", form), ex);
                         }
