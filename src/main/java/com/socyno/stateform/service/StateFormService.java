@@ -12,7 +12,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import lombok.Data;
+import lombok.Getter;
 import lombok.NonNull;
+import lombok.Setter;
+import lombok.ToString;
 import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 
@@ -71,30 +74,74 @@ public class StateFormService {
     
     private static final Map<String, CommonStateFormInstance> STATE_FORM_INSTANCES
                             = new ConcurrentHashMap<>();
-    static {
-        Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    List<Map<String, Object>> list = getDao().queryAsList(
-                            "SELECT class_path, form_attrs FROM system_form_viewattrs");
-                    for(Map<String, Object> l : list) {
-                        String form = null;
-                        String attrs = null;
-                        try {
-                            form = (String)l.get("class_path");
-                            attrs = (String)l.get("form_attrs");
-                            ClassUtil.AttributesProccessor.setCustomFormAttributes(form,
-                                    ClassUtil.AttributesProccessor.parseFormCustomizedProperties(form, attrs));
-                        } catch (Exception ex) {
-                            log.error(String.format("Failed to load form custom attributes, form = %s", form), ex);
-                        }
-                    }
-                } catch (Exception e) {
-                    log.error("Failed to load configs.", e);
+    
+    private static class FormCustomDataCacher implements Runnable {
+        @Override
+        public void run() {
+            refresh();
+        }
+        
+        @Getter
+        @Setter
+        @ToString
+        private static class FormCustomView {
+            private String formName;
+            private String formView;
+        }
+        
+        /**
+         * SELECT DISTINCT
+         *     class_path,
+         *     form_attrs
+         * FROM
+         *     system_form_viewattrs
+         */
+        @Multiline
+        private static final String SQL_QUERY_FORM_VIEW = "x";
+        
+        public void refresh(String ...forms) {
+            try {
+                Object[] args = null;
+                StringBuilder sql = new StringBuilder(SQL_QUERY_FORM_VIEW);
+                if (forms != null && forms.length > 0) {
+                    sql.append(" WHERE class_path in ")
+                        .append(StringUtils.join("?", forms.length, ", "));
+                    args = (Object[])forms;
                 }
+                saveToCache(getDao().queryAsList(FormCustomView.class, sql.toString(), args), 0);
+            } catch (Exception e) {
+                log.error("Failed to load configs.", e);
             }
-        }, 20, 30, TimeUnit.SECONDS);
+            
+        }
+        
+        private void saveToCache(List<FormCustomView> list, int offset) {
+            int listSize;
+            if (list == null || (listSize = list.size()) <= 0 || offset >= listSize) {
+                return;
+            }
+            String currentForm = null;
+            String currentAttrs = null;
+            try {
+                while (offset < listSize) {
+                    currentForm = (String) list.get(offset).getFormName();
+                    currentAttrs = (String) list.get(offset).getFormView();
+                    ClassUtil.AttributesProccessor.setCustomFormAttributes(currentForm,
+                            ClassUtil.AttributesProccessor.parseFormCustomizedProperties(currentForm, currentAttrs));
+                    offset++;
+                }
+            } catch (Exception ex) {
+                log.error(String.format("Failed to load form custom attributes, form = %s", currentForm), ex);
+                saveToCache(list, ++offset);
+            }
+        }
+    }
+    
+    private final static FormCustomDataCacher FORM_DATA_CACHER = new FormCustomDataCacher();
+    
+    static {
+        Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(FORM_DATA_CACHER, 20, 30,
+                TimeUnit.SECONDS);
     }
     
     public static AbstractDao getDao() {
@@ -625,6 +672,7 @@ public class StateFormService {
             log.warn("The form type key ({}) not found", ex);
             return null;
         }
+        FORM_DATA_CACHER.refresh(formTypeKey);
         return ClassUtil.classToJson(formClass).toString();
     }
     
