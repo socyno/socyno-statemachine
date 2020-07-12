@@ -1,7 +1,5 @@
 package com.socyno.stateform.abs;
 
-import com.socyno.stateform.abs.AbstractStateAction.EventFormType;
-
 public abstract class AbstractStateCreateAction<S extends AbstractStateForm, F extends AbstractStateForm,
                         T extends AbstractStateForm> extends AbstractStateAction<S, F, T> {
     @Override
@@ -22,5 +20,10 @@ public abstract class AbstractStateCreateAction<S extends AbstractStateForm, F e
     
     public AbstractStateCreateAction(String display, String targetState) {
         super(display, (String[]) null, targetState);
+    }
+    
+    @Override
+    public boolean allowHandleReturnNull() {
+        return false;
     }
 }

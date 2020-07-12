@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,9 +43,6 @@ import com.socyno.stateform.abs.AbstractStateForm;
 import com.socyno.stateform.abs.AbstractStateFormService;
 import com.socyno.stateform.abs.AbstractStateFormServiceWithBaseDao;
 import com.socyno.stateform.abs.AbstractStatePrepare;
-import com.socyno.stateform.authority.Authority;
-import com.socyno.stateform.authority.AuthorityScopeIdNoopParser;
-import com.socyno.stateform.authority.AuthorityScopeType;
 import com.socyno.stateform.exec.StateFormActionNotFoundException;
 import com.socyno.stateform.exec.StateFormCustomFieldFormNotFoundException;
 import com.socyno.stateform.exec.StateFormNotDefinedException;
@@ -58,8 +56,15 @@ import com.socyno.stateform.util.StateFormSimpleDefinition;
 import com.socyno.stateform.util.StateFormFieldCustomAttribute;
 import com.socyno.stateform.util.StateFormWithAction;
 import com.socyno.base.bscsqlutil.SqlQueryUtil;
+import com.socyno.webbsc.authority.Authority;
+import com.socyno.webbsc.authority.AuthorityEntity;
+import com.socyno.webbsc.authority.AuthorityScope;
+import com.socyno.webbsc.authority.AuthorityScopeIdNoopMultipleCleaner;
+import com.socyno.webbsc.authority.AuthorityScopeIdNoopMultipleParser;
+import com.socyno.webbsc.authority.AuthorityScopeIdNoopParser;
 import com.socyno.webbsc.ctxutil.ContextUtil;
 import com.socyno.webbsc.ctxutil.HttpMessageConverter;
+import com.socyno.webbsc.service.jdbc.SimpleLogService;
 
 @Slf4j
 public class StateFormService {
@@ -84,15 +89,15 @@ public class StateFormService {
         @Getter
         @Setter
         @ToString
-        private static class FormCustomView {
+        public static class FormCustomView {
             private String formName;
             private String formView;
         }
         
         /**
          * SELECT DISTINCT
-         *     class_path,
-         *     form_attrs
+         *     class_path form_name,
+         *     form_attrs form_view
          * FROM
          *     system_form_viewattrs
          */
@@ -105,14 +110,13 @@ public class StateFormService {
                 StringBuilder sql = new StringBuilder(SQL_QUERY_FORM_VIEW);
                 if (forms != null && forms.length > 0) {
                     sql.append(" WHERE class_path in ")
-                        .append(StringUtils.join("?", forms.length, ", "));
+                        .append(StringUtils.join("?", forms.length, ", ", "(", ")"));
                     args = (Object[])forms;
                 }
                 saveToCache(getDao().queryAsList(FormCustomView.class, sql.toString(), args), 0);
             } catch (Exception e) {
                 log.error("Failed to load configs.", e);
             }
-            
         }
         
         private void saveToCache(List<FormCustomView> list, int offset) {
@@ -294,12 +298,8 @@ public class StateFormService {
      * 扫描并解析所有已注册的通用表单
      */
     public static void parseStateFormRegister() throws Exception {
-        parseStateFormRegister((String)null);
-    }
-    
-    public static void parseStateFormRegister(String backend) throws Exception {
          for (CommonStateFormRegister form : listStateFormRegister()) {
-             if (backend != null && backend.equals(form.getFormBackend())) {
+             if (StringUtils.equals(ContextUtil.getAppName(), form.getFormBackend())) {
                  parseStateFormRegister(form);
              }
          }
@@ -322,78 +322,56 @@ public class StateFormService {
             throw new MessageException(String.format("注册表单名称（%s）与类中定义的名称(%s/%s)不一致.", form.getFormName(),
                     form.getFormService(), serviceObject.getFormName()));
         }
-        log.info("开始解析通用流程定义: {}", form);
-        getDao().executeTransaction(new ResultSetProcessor() {
-            @Override
-            public void process(ResultSet result, Connection conn) throws Exception {
-                getDao().executeUpdate(SqlQueryUtil.prepareDeleteQuery(
-                    "system_form_actions", new ObjectMap()
-                            .put("=form_name", form.getFormName())
-                ));
-                
-                /* 首选注册流程定义事件操作 */
-                List<ObjectMap> sqlEventsKvPairs = new ArrayList<>(); 
-                for (StateFormActionDefinition formAction : serviceObject.getExternalFormActionDefinition()) {
-                    Authority authority;
-                    if ((authority = formAction.getAuthority()) == null || (authority.value().checkScopeId()
-                            && AuthorityScopeIdNoopParser.class.equals(authority.parser()))) {
-                        throw new MessageException(String.format("通用流程表单事件(%s/%s)未声明授权(Authority)信息, 或未实现 parser 解析器",
-                                formAction.getFormName(), formAction.getName()));
-                    }
-                    
-                    sqlEventsKvPairs.add(new ObjectMap()
-                            .put("form_name", form.getFormName())
-                            .put("action_name", formAction.getName())
-                            .put("form_backend", form.getFormBackend())
-                            .put("action_key", AbstractStateFormService.getFormEventKey(form.getFormName(), formAction.getName()))
-                            .put("action_display", formAction.getDisplay())
-                            .put("action_type", formAction.isListEvent() ? "list" : "single")
-                            .put("action_form_type", formAction.getEventFormType().name())
-                            .put("source_state", StringUtils.join(CommonUtil.ifNull(formAction.getSourceStates(), new String[] {}), ','))
-                            .put("target_state", formAction.getTargetState())
-                            .put("prepare_required", formAction.isPrepareRequired())
-                            .put("message_reuqired", formAction.getMessageRequired())
-                            .put("comfirm_reuqired", formAction.isConfirmRequired())
-                            .put("revision_ignored", formAction.isStateRevisionChangeIgnored())
-                            .put("action_async", formAction.isAsyncEvent())
-                            .put("authority_type", authority.value().name())
-                            .put("authority_parser", authority.parser().getName())
-                            .put("authority_cheker", authority.checker().getName())
-                    );
-                }
-                /* 再插入预定义的非通用事件操作 */
-                Map<String, String> extraEvents;
-                if ((extraEvents = serviceObject.getFormPredefinedExtraEvents()) != null) {
-                    for (Map.Entry<String, String> exEvent : extraEvents.entrySet()) {
-                        if (StringUtils.isAnyBlank(exEvent.getKey(), exEvent.getValue())) {
-                            continue;
-                        }
-                        sqlEventsKvPairs.add(new ObjectMap()
-                                .put("form_name", form.getFormName())
-                                .put("form_backend", form.getFormBackend())
-                                .put("action_name", exEvent.getKey())
-                                .put("action_key",
-                                        AbstractStateFormService.getFormEventKey(form.getFormName(), exEvent.getKey()))
-                                .put("action_display", exEvent.getValue())
-                                .put("action_type", "NONE")
-                                .put("authority_type", AuthorityScopeType.System.name())
-                                .put("action_form_type", "")
-                                .put("source_state", "")
-                                .put("target_state", "")
-                                .put("prepare_required", 0)
-                                .put("message_reuqired", 1)
-                                .put("comfirm_reuqired", 0)
-                                .put("revision_ignored", 0)
-                                .put("action_async", 0)
-                                .put("authority_parser", "")
-                                .put("authority_cheker", "")
-                        );
-                    }
-                }
-                getDao().executeUpdate(SqlQueryUtil.pairs2InsertQuery("system_form_actions", sqlEventsKvPairs));
+        /**
+         * 解析和校验通用流程事件定义，并转化为授权标识存储以供系统功能的配置使用。
+         * 
+         */
+        log.info("开始解析并验证通用流程定义: {}", form);
+        List<AuthorityEntity> authorities = new LinkedList<>();
+        for (StateFormActionDefinition formAction : serviceObject.getExternalFormActionDefinition()) {
+            Authority authority;
+            AuthorityScope authorityScope;
+            if ((authority = formAction.getAuthority()) == null || (authorityScope = serviceObject
+                    .getPermissionService().getProvidedAuthorityScope(authority.value())) == null) {
+                throw new MessageException(String.format("通用流程表单事件(%s/%s)未声明授权(Authority)信息",
+                        formAction.getFormName(), formAction.getName()));
             }
-        });
-        log.info("完成解析通用流程定义: {}", form);
+            if (authorityScope.isSubsystem()) {
+                if (AuthorityScopeIdNoopParser.class.equals(authority.parser())
+                        && AuthorityScopeIdNoopMultipleParser.class.equals(authority.multipleParser())) {
+                    throw new MessageException(
+                            String.format("通用流程表单事件(%s/%s)未实现授权标的解析器（parser or multipleParser）",
+                                    formAction.getFormName(), formAction.getName()));
+                }
+            }
+            if (!AuthorityScopeIdNoopParser.class.equals(authority.parser())
+                    && !AuthorityScopeIdNoopMultipleParser.class.equals(authority.multipleParser())) {
+                throw new MessageException(String.format("通用流程表单事件(%s/%s)授权标的解析器（parser or multipleParser）只能使用其一",
+                        formAction.getFormName(), formAction.getName()));
+            }
+            if (formAction.isCreateEvent() && (authority.multipleChoiceEnabled()
+                    || !AuthorityScopeIdNoopMultipleCleaner.class.equals(authority.multipleCleaner()))) {
+                throw new MessageException(
+                        String.format("通用流程表单创建事件(%s/%s)中不支持 multipleChoiceEnabled 和 multipelCleaner 属性",
+                                formAction.getFormName(), formAction.getName()));
+            }
+            authorities.add(new AuthorityEntity(authority.value(),
+                    AbstractStateFormService.getFormEventKey(form.getFormName(), formAction.getName())));
+        }
+        Map<String, String> extraEvents;
+        if ((extraEvents = serviceObject.getFormPredefinedExtraEvents()) != null) {
+            for (Map.Entry<String, String> exEvent : extraEvents.entrySet()) {
+                if (StringUtils.isAnyBlank(exEvent.getKey(), exEvent.getValue())) {
+                    continue;
+                }
+                authorities.add(new AuthorityEntity("Predefined",
+                        AbstractStateFormService.getFormEventKey(form.getFormName(), exEvent.getKey())));
+            }
+        }
+        serviceObject.getPermissionService().saveAuthorityEntitisForConfig(form.getFormName(), authorities);
+        log.info("完成解析并验证通用流程定义: {}", form);
+        
+        
         STATE_FORM_INSTANCES.put(form.getFormName(), new CommonStateFormInstance()
                             .setFormName(form.getFormName())
                             .setFormDisplay(form.getFormDisplay())
@@ -784,17 +762,19 @@ public class StateFormService {
     public static StateFlowDefinition parseFormFlowDefinition(String formName, boolean unchanged,
             Long formId) throws Exception {
         CommonStateFormInstance instance = getStateFormInstance(formName);
+        AbstractStateForm currentForm = instance.getServiceInstance().getForm(formId);
         AbstractStateFormServiceWithBaseDao<?> service = instance.getServiceInstance();
         Map<StateFlowNodeData, Set<StateFlowNodeData>> flowData = service
-                .parseFormFlowChartDefinition(unchanged, formId);
+                .parseFormFlowChartDefinition(unchanged, currentForm);
         List<StateFlowLinkData> flowLinkData = new ArrayList<>();
         for (Map.Entry<StateFlowNodeData, Set<StateFlowNodeData>> nodeEntry : flowData.entrySet()) {
+            StateFlowNodeData parentNode = nodeEntry.getKey();
             Set<StateFlowNodeData> nodeChildren = nodeEntry.getValue();
             if (nodeChildren == null || nodeChildren.size() <= 0) {
                 continue;
             }
             for (StateFlowNodeData c : nodeChildren) {
-                flowLinkData.add(new StateFlowLinkData(nodeEntry.getKey().getKey(), c.getKey()));
+                flowLinkData.add(new StateFlowLinkData(parentNode.getKey(), c.getKey()));
             }
         }
         return new StateFlowDefinition(flowData.keySet(), flowLinkData);

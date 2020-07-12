@@ -33,7 +33,7 @@ public class StateFlowNodeData {
 
     private final boolean current;
 
-    private Category category;
+    private final Category category;
 
     public StateFlowNodeData(boolean yesNo, String keyPrefix) {
         category = Category.YESNO;

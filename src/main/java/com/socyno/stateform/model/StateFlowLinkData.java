@@ -1,23 +1,25 @@
 package com.socyno.stateform.model;
 
 import lombok.Getter;
-import lombok.Setter;
 import lombok.ToString;
 
 @Getter
-@Setter
 @ToString
 public class StateFlowLinkData {
     
-    private String to;
+    private final String to;
     
-    private String from;
+    private final String from;
     
-    private String linkText;
+    private final String linkText;
     
     public StateFlowLinkData(String from, String to) {
-        this.from = from;
-        this.to = to;
+        this(from, to, null);
     }
     
+    public StateFlowLinkData(String from, String to, String linkText) {
+        this.to = to;
+        this.from = from;
+        this.linkText = linkText;
+    }
 }

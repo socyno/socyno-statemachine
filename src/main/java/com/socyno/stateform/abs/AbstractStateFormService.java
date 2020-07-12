@@ -17,6 +17,7 @@ import java.util.Set;
 import com.github.reinert.jjschema.v1.FieldOption;
 import com.github.reinert.jjschema.v1.FieldSimpleOption;
 import com.socyno.base.bscexec.MessageException;
+import com.socyno.base.bscmixutil.ArrayUtils;
 import com.socyno.base.bscmixutil.ClassUtil;
 import com.socyno.base.bscmixutil.StringUtils;
 import com.socyno.base.bscmodel.ObjectMap;
@@ -27,20 +28,20 @@ import com.socyno.base.bscservice.AbstractLogService;
 import com.socyno.base.bscservice.AbstractNotifyService;
 import com.socyno.base.bscservice.AbstractTodoService;
 import com.socyno.base.bscservice.AbstractLockService.CommonLockExecutor;
-import com.socyno.stateform.authority.Authority;
 import com.socyno.stateform.exec.StateFormActionDeclinedException;
 import com.socyno.stateform.exec.StateFormActionMessageRequiredException;
 import com.socyno.stateform.exec.StateFormActionNotFoundException;
 import com.socyno.stateform.exec.StateFormActionReturnException;
+import com.socyno.stateform.exec.StateFormEventResultNullException;
 import com.socyno.stateform.exec.StateFormNotFoundException;
 import com.socyno.stateform.exec.StateFormRevisionChangedException;
 import com.socyno.stateform.exec.StateFormRevisionNotFoundException;
 import com.socyno.stateform.model.StateFlowNodeData;
+import com.socyno.stateform.service.PermissionService;
 import com.socyno.stateform.exec.StateFormListEventDefinedException;
 import com.socyno.stateform.exec.StateFormListEventResultException;
 import com.socyno.stateform.exec.StateFormListEventTargetException;
 import com.socyno.stateform.exec.StateFormNamedQueryNotFoundException;
-import com.socyno.stateform.service.PermissionService;
 import com.socyno.stateform.util.StateFormActionDefinition;
 import com.socyno.stateform.util.StateFormEventClassEnum;
 import com.socyno.stateform.util.StateFormNamedQuery;
@@ -49,6 +50,10 @@ import com.socyno.stateform.util.StateFormQueryDefinition;
 import com.socyno.stateform.util.StateFormRevision;
 import com.socyno.stateform.util.StateFormStateBaseEnum;
 import com.socyno.stateform.util.StateFormWithAction;
+import com.socyno.webbsc.authority.Authority;
+import com.socyno.webbsc.authority.AuthorityScopeIdNoopMultipleCleaner;
+import com.socyno.webbsc.authority.AuthorityScopeIdNoopMultipleParser;
+import com.socyno.webbsc.authority.AuthorityScopeIdNoopParser;
 
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
@@ -76,6 +81,8 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
     
     protected abstract AbstractTodoService getTodoService();
     
+    public abstract PermissionService getPermissionService();
+    
     protected abstract AbstractNotifyService<?> getNotifyService();
     
     @SuppressWarnings("unchecked")
@@ -88,7 +95,7 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
     public Class<? extends S> getSingleFormClass() throws Exception {
         Class<? extends S> singleFormClass;
         Class<S> basicFormClass = getFormClass();
-        if ( basicFormClass.isAssignableFrom(singleFormClass = (Class<? extends S>) getClass()
+        if (basicFormClass.isAssignableFrom(singleFormClass = (Class<? extends S>) getClass()
                     .getMethod("getForm", long.class).getReturnType()) ) {
             return singleFormClass;
         }
@@ -535,21 +542,18 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
     /**
      * 解析状态机的事件定义，生成流程数据，用于绘制流程图
      */
+    @SuppressWarnings("unchecked")
     public final Map<StateFlowNodeData, Set<StateFlowNodeData>> parseFormFlowChartDefinition(
-            boolean removeUnChangeStateNode) throws Exception {
-        return parseFormFlowChartDefinition(removeUnChangeStateNode, null);
-    }
-    
-    /**
-     * 解析状态机的事件定义，生成流程数据，用于绘制流程图
-     */
-    public final Map<StateFlowNodeData, Set<StateFlowNodeData>> parseFormFlowChartDefinition(
-            boolean keepUnChanged, Long formId) throws Exception {
+            boolean keepUnChanged, AbstractStateForm form) throws Exception {
         /**
          * 加载当前的状态信息
          */
-        StateFormRevision stateRevision = (formId != null) ? loadStateRevision(formId) : null;
-        
+        StateFormRevision stateRevision = null;
+        if (form != null) {
+            stateRevision = new StateFormRevision().setId(form.getId())
+                .setStateFormRevision(form.getRevision())
+                .setStateFormStatus(form.getState());
+        }
         /**
          * 将事件及状态的流转关系转化为基础流程数据
          */
@@ -558,6 +562,9 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
         for (Map.Entry<String,AbstractStateAction<S,?,?>> e : getFormActions(true, null).entrySet()) {
             action = e.getValue();
             if (action == null) {
+                continue;
+            }
+            if (form != null && !action.flowMatched((S)form)) {
                 continue;
             }
             StateFlowNodeData actionNode = new StateFlowNodeData(e.getKey(), action);
@@ -571,33 +578,52 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
                 }
                 baseFlowData.get(actionNode).add(sourceNode);
             }
-            parseStateChoice(action.getTargetState(), actionNode, baseFlowData, stateRevision);
+            parseStateChoice(action.getTargetState(), actionNode, baseFlowData, stateRevision, (S)form);
         }
         
         /**
-         * 构造流程图所需的数据结构
+         * 构造流程图所需的数据结构。结果集中的 key 流程节点数据， values 为其下游节点列表。
          */
         StateFlowNodeData stateUnchangedNode = null;
+        Set<StateFlowNodeData> noParentNonActionNodes = new HashSet<>(); 
         Map<StateFlowNodeData, Set<StateFlowNodeData>> resultFlowData = new HashMap<>();
         for (Map.Entry<StateFlowNodeData, Set<StateFlowNodeData>> flowEntry : baseFlowData.entrySet()) {
-            if (!resultFlowData.containsKey(flowEntry.getKey())) {
-                resultFlowData.put(flowEntry.getKey(), new HashSet<>());
+            StateFlowNodeData childNode = flowEntry.getKey();
+            Set<StateFlowNodeData> parentNodes = flowEntry.getValue();
+            if (!StateFlowNodeData.Category.ACTION.equals(flowEntry.getKey().getCategory())
+                    && parentNodes.isEmpty()) {
+                noParentNonActionNodes.add(childNode);
+                continue;
             }
-            for(StateFlowNodeData parentNode : flowEntry.getValue()) {
+            if (!resultFlowData.containsKey(childNode)) {
+                resultFlowData.put(childNode, new HashSet<>());
+            }
+            for (StateFlowNodeData parentNode : parentNodes) {
                 if (!resultFlowData.containsKey(parentNode)) {
-                    resultFlowData.put(parentNode,new HashSet<>());
+                    resultFlowData.put(parentNode, new HashSet<>());
                 }
-                resultFlowData.get(parentNode).add(flowEntry.getKey());
+                resultFlowData.get(parentNode).add(childNode);
                 if (stateUnchangedNode == null) {
                     if (StateFlowNodeData.Category.UNCHANGED.equals(parentNode.getCategory())) {
                         stateUnchangedNode = parentNode;
-                    } else if (StateFlowNodeData.Category.UNCHANGED.equals(flowEntry.getKey().getCategory())) {
-                        stateUnchangedNode = flowEntry.getKey();
+                    } else if (StateFlowNodeData.Category.UNCHANGED.equals(childNode.getCategory())) {
+                        stateUnchangedNode = childNode;
                     }
                 }
             }
         }
-        
+        /**
+         * 移除所有无父节点的非事件节点及其子节点信息。
+         * 
+         * 在流程解析期间，会根据流程实列选择性的丢弃部分流程分支，
+         * 从而导致解析的流程数据中存在部分无父节点的状态存在，而
+         * 从流程设计的角度出发，通常都一定是由某个事件创建流程单
+         * 从而形成流程实例，因此非事件却无父节点的情况均视为未清
+         * 理干净或无效的流程节点。
+         */
+        for (StateFlowNodeData node : noParentNonActionNodes) {
+            resultFlowData.remove(node);
+        }
         if (keepUnChanged) {
             return resultFlowData;
         }
@@ -635,7 +661,7 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
      */
     private void parseStateChoice(final AbstractStateChoice targetChoice, final StateFlowNodeData parentNode,
                                   final Map<StateFlowNodeData, Set<StateFlowNodeData>> flowData,
-                                  final StateFormRevision stateRevision ) {
+                                  final StateFormRevision stateRevision, final S form) {
         /**
          * 最终的简单状态值处理
          */
@@ -666,6 +692,12 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
                 continue;
             }
             /**
+             * 当明确声明，当前选择器分支与流程实列无关时，做丢弃处理
+             */
+            if (form != null && !targetChoice.flowMatched(form, yesNo)) {
+                continue;
+            }
+            /**
              * 对于简单选择器，为确保 YesNo 节点的唯一性，随机生成唯一键
              */
             StateFlowNodeData yesNoNode = yesNoChoice.isSimple()
@@ -692,7 +724,7 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
              * 非简单选择器，则需要继续递归，生成流程节点数据
              */
             if (!yesNoChoice.isSimple()) {
-                parseStateChoice(yesNoChoice, yesNoNode, flowData, stateRevision);
+                parseStateChoice(yesNoChoice, yesNoNode, flowData, stateRevision, form);
             }
         }
     }
@@ -799,9 +831,8 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
             log.warn("表单({})未定义此外部操作({})。", getFormName(), event);
             return false;
         }
-        
         String sourceState;
-        if (!action.sourceContains(sourceState = form == null ? null : form.getState())) {
+        if (!action.sourceContains(sourceState = form.getState())) {
             log.warn("表单({})的外部操作({})不可从指定的状态({})上执行。", getFormName(), event, sourceState);
             return false;
         }
@@ -817,11 +848,31 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
             if (createInstance(authority.checker()).check(form)) {
                 return true;
             }
-            Long scopeTargetId = null;
-            if (authority.value().checkScopeId()) {
-                scopeTargetId = createInstance(authority.parser()).getAuthorityScopeId(form);
+            /**
+             * 全局授权验证
+             */
+            long[] allScopeTargetIds;
+            if ((allScopeTargetIds = parseAuthorityScopeTargetIds(authority, form)) == null) {
+                return getPermissionService().hasFormEventPermission(authority.value(), getFormName(), event, null);
             }
-            return PermissionService.hasFormEventPermission(authority.value(), getFormName(), event, scopeTargetId);
+            /**
+             * 针对 multipleChoiceEnabled 的场景，只要当前用户有任一授权标的的授权即可，
+             * 否则必须具有所有授权标的的授权才允许执行操作。
+             */
+            if (authority.multipleChoiceEnabled()) {
+                for (Long targetId : allScopeTargetIds) {
+                    if (getPermissionService().hasFormEventPermission(authority.value(), getFormName(), event, targetId)) {
+                        return true;
+                    } 
+                }
+                return false;
+            }
+            for (Long targetId : allScopeTargetIds) {
+                if (!getPermissionService().hasFormEventPermission(authority.value(), getFormName(), event, targetId)) {
+                   return false;
+                } 
+            }
+            return true;
         } catch(Exception e) {
             log.error(String.format("表单(%s)的外部操作(%s)可执行检测程序异常。", getFormName(), event), e);
             return false;
@@ -845,9 +896,14 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
                 log.warn("表单({})操作({})未声明授权信息。", getFormName(), event);
                 return false;
             }
-            /* form 为 null 值，视为事前评估，只要在授权范围(SopeType)上发现有任一标的(ScopeId)被授予该权限，即为允许 */
+            /** 
+             * form 为 null 值，视为事前评估，只要在授权范围(SopeType)上发现
+             * 有任一标的(ScopeId)被授予该权限，即为允许执行。
+             * 
+             * TODO: 针对非 Create 事件，后续需根据设计调整对应的收取按验证机制。
+             **/
             if (form == null) {
-                return PermissionService.hasFormEventAnyPermission(authority.value(), getFormName(), event);
+                return getPermissionService().hasFormEventAnyPermission(authority.value(), getFormName(), event);
             }
             if (createInstance(authority.rejecter()).check(form)) {
                 return false;
@@ -855,11 +911,23 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
             if (createInstance(authority.checker()).check(form)) {
                 return true;
             }
-            Long scopeTargetId = null;
-            if (authority.value().checkScopeId()) {
-                scopeTargetId = createInstance(authority.parser()).getAuthorityScopeId(form);
+            /**
+             * 全局授权验证
+             */
+            long[] allScopeTargetIds;
+            if ((allScopeTargetIds = parseAuthorityScopeTargetIds(authority, form)) == null) {
+                return getPermissionService().hasFormEventPermission(authority.value(), getFormName(), event, null);
             }
-            return PermissionService.hasFormEventPermission(authority.value(), getFormName(), event, scopeTargetId);
+            /**
+             * 针对 List 事件（包括 Create 事件），不适用 multipleChoiceEnabled 的场景，
+             * 因此，必须具有所有授权标的的授权才允许执行操作。
+             */
+            for (Long targetId : allScopeTargetIds) {
+                if (!getPermissionService().hasFormEventPermission(authority.value(), getFormName(), event, targetId)) {
+                   return false;
+                } 
+            }
+            return true;
         } catch(Exception e) {
             log.error(String.format("表单(%s)的创建操作(%s)可执行检测程序异常。", getFormName(), event), e);
             return false;
@@ -867,27 +935,57 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
     }
     
     /**
+     * 解析流程实列中，事件的授权标的清单。
+     * 
+     * 如果返回 null，即代表为全局授权，无授权标的存在；
+     * 否则，在解析失败或未解析到标的时将抛出异常。
+     * 
+     * @param authority
+     * @param form
+     * @return
+     * @throws Exception
+     */
+    protected long[] parseAuthorityScopeTargetIds(@NonNull Authority authority, AbstractStateForm form) throws Exception {
+        if (!getPermissionService().getEnsuredAuthorityScope(authority.value()).isCheckTargetId()) {
+           return null;
+        }
+        long[] allScopeTargetIds = null;
+        if (!AuthorityScopeIdNoopParser.class.equals(authority.parser())) {
+            Long scopeTargetId = null;
+            if ((scopeTargetId = authority.parser().newInstance().getAuthorityScopeId(form)) == null) {
+                throw new MessageException(String.format("解析授权标的失败（formId = %s, parser = %s）",
+                        form.getId(), authority.parser().getName()));
+            }
+            allScopeTargetIds = new long[] {scopeTargetId};
+        } else if (!AuthorityScopeIdNoopMultipleParser.class.equals(authority.multipleParser())){
+            if ((allScopeTargetIds = authority.multipleParser().newInstance().getAuthorityScopeIds(form)) == null) {
+                throw new MessageException(String.format("解析授权标的失败（formId = %s, parser = %s）",
+                        form.getId(), authority.multipleParser().getName()));
+            }
+        }
+        if (allScopeTargetIds == null || allScopeTargetIds.length <= 0) {
+            throw new MessageException(String.format("未解析到授权标的信息（formId = %s, parser = %s）",
+                    form.getId(), authority.multipleParser().getName()));
+        }
+        return allScopeTargetIds;
+    }
+    
+    /**
      * 获取当前表单指定事件上的授权人员清单
      */
-    public Long[] getActionUserIds(String event, S form) throws Exception {
+    public long[] getActionUserIds(String event, S form) throws Exception {
         AbstractStateAction<S, ?, ?> action = null;
-        if ((action = getExternalFormAction(event)) == null || action.isCreateEvent() || action.isListEvent()) {
+        if ((action = getExternalFormAction(event)) == null || action.isListEvent()) {
             throw new MessageException(String.format("表单(%s)未定义此外部操作(%s)", getFormName(), event));
         }
         Authority authority;
         if ((authority = action.getAuthority()) == null) {
             throw new MessageException(String.format("表单(%s)操作(%s)未声明授权信息。", getFormName(), event));
         }
-        Long scopeTargetId = null;
-        if (authority.value().checkScopeId()) {
-            if ((scopeTargetId = authority.parser().newInstance().getAuthorityScopeId(form)) == null) {
-                throw new MessageException(String.format("无法表单(%s)操作(%s)授权标的。", getFormName(), event));
-            }
-        }
-        return PermissionService.queryFormEventUsers(authority.value(), getFormName(), event, scopeTargetId)
-                .toArray(new Long[0]);
+        long[] allScopeTargetIds = parseAuthorityScopeTargetIds(authority, form);
+        return getPermissionService().queryAuthedUserIds(AbstractStateFormService.getFormEventKey(getFormName(), event),
+                authority.value(), allScopeTargetIds);
     }
-
     
     /**
      * 操作执行前的检查。
@@ -1077,15 +1175,29 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
         }
     }
     
+    protected abstract void addMultiChoiceCoveredTargetScopeIds(String event, AbstractStateForm form, String scopeType, long ...coverdTargetScopeIds) throws Exception;
+    
+    protected abstract long[] queryMultipleChoiceCoveredTargetScopeIds(String event, AbstractStateForm form)  throws Exception;;
+    
+    protected abstract void cleanMultipleChoiceTargetScopeIds(String[] clearEvents, AbstractStateForm form) throws Exception;;
+    
     private void psotHandleForm(String event, String message, Object result, S originForm, AbstractStateForm form) throws Exception {
         /**
-         * 设置目标状态
+         * 首先，验证事件的响应结果
          */
-        String newState = null;
-        AbstractStateChoice targetState;
         AbstractStateAction<S, ?, ?> action = getExternalFormAction(event);
+        if (result == null && !action.allowHandleReturnNull()) {
+            throw new StateFormEventResultNullException(getFormName(), event);
+        }
         boolean isCreateEvent = action.isCreateEvent();
-        if (isCreateEvent || !action.isListEvent() ) {
+        /**
+         * 针对单一表单事件，需要记录操作日志，启动事件触发器（内部事件）
+         * 
+         * TODO: 针对 List（不包括 Create） 事件，后续需根据设计，实现对应的能力。
+         */
+        if (isCreateEvent || !action.isListEvent()) {
+            String newState = null;
+            AbstractStateChoice targetState;
             if ((targetState = action.getTargetState()) != null) {
                 newState = targetState.getTargetState(form);
             }
@@ -1093,16 +1205,54 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
                 if (StringUtils.isBlank(newState)) {
                     throw new StateFormListEventTargetException(getFormName(), event);
                 }
-                if (result == null || !AbstractStateForm.class.isAssignableFrom(result.getClass())) {
+                if (!getFormClass().isAssignableFrom(result.getClass())) {
                     throw new StateFormListEventResultException(getFormName(), event);
                 }
                 form.setRevision(1L);
                 form.setState(newState);
                 form.setId(((AbstractStateForm)result).getId());
             } else {
+                Authority authority = action.getAuthority();
                 form.setState(StringUtils.ifBlank(newState, originForm.getState()));
+                /**
+                 * 当清除和 multipleChoiceEnabled 同时存在时，优先执行清除操作，
+                 * 当然在此场景下，将很可能导致流程始终无法正常走向下一状态。
+                 */
+                if (!AuthorityScopeIdNoopMultipleCleaner.class.equals(authority.multipleCleaner())) {
+                    String[] clearEvents = authority.multipleCleaner().newInstance().getEventsToClean();
+                    cleanMultipleChoiceTargetScopeIds(clearEvents, form);
+                }
+                /**
+                 * 针对 multipleChoiceEnabled 场景，记录下当前用户操作覆盖的收取按标的，
+                 * 并根据是否已全部覆盖当前流程事件实例所有可查询到的要求，来决定是否走
+                 * 向流程实例的下一个状态。
+                 */
+                if (!AuthorityScopeIdNoopMultipleParser.class.equals(authority.multipleParser())) {
+                    if (authority.multipleChoiceEnabled()) {
+                        /**
+                         * 获取当前用户操作覆盖的授权标的，并记录下来
+                         */ 
+                        long[] coveredTargetScopeIds = getPermissionService()
+                                .queryFormEventScopeTargetIds(authority.value(), getFormName(), event);
+                        /* 当前流程实例涉及的所有授权标的清单 */ 
+                        long[] multipleTargetScopeIds = authority.multipleParser().newInstance()
+                                .getAuthorityScopeIds(originForm == null ? form : originForm);
+                        if (coveredTargetScopeIds == null) {
+                            coveredTargetScopeIds = multipleTargetScopeIds;
+                        }
+                        addMultiChoiceCoveredTargetScopeIds(event, form, authority.value(), coveredTargetScopeIds);
+                        /**
+                         * 查询并确认是否已完全覆盖，以决定流程走向
+                         */
+                        coveredTargetScopeIds = queryMultipleChoiceCoveredTargetScopeIds(event, form);
+                        if (coveredTargetScopeIds != null && coveredTargetScopeIds.length > 0) {
+                            if (!ArrayUtils.containsAll(coveredTargetScopeIds, multipleTargetScopeIds)) {
+                                form.setState(originForm.getState());
+                            }
+                        }
+                    }
+                }
             }
-            
             /**
              * 补充事件输出的变更描述，以便记录到操作日志中
              */
@@ -1150,7 +1300,6 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
                     }
                 }
             }
-            
         }
         /**
          * 保存状态并回调预定义后处理方法
@@ -1257,8 +1406,12 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
         return getFormEventKey(getFormName(), event);
     }
     
+    public static String getFormEventKeyPrefix(String formName) {
+        return String.format("%s::", formName);
+    }
+    
     public static String getFormEventKey(String formName, String formEvent) {
-        return String.format("%s::%s", formName, formEvent);
+        return String.format("%s%s", getFormEventKeyPrefix(formName), formEvent);
     }
     
     public static String getFormAccessEventName() {

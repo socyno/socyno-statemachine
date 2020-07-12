@@ -2,20 +2,26 @@ package com.socyno.stateform.abs;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.adrianwalker.multilinestring.Multiline;
+
 import lombok.NonNull;
 
 import com.github.reinert.jjschema.v1.FieldOption;
+import com.socyno.base.bscmixutil.ConvertUtil;
 import com.socyno.base.bscmixutil.StringUtils;
 import com.socyno.base.bscmodel.ObjectMap;
 import com.socyno.base.bscmodel.PagedList;
 import com.socyno.base.bscmodel.PagedListWithTotal;
+import com.socyno.base.bscmodel.SessionContext;
 import com.socyno.base.bscservice.AbstractLockService;
 import com.socyno.base.bscservice.AbstractLogService;
 import com.socyno.base.bscservice.AbstractNotifyService;
@@ -27,12 +33,13 @@ import com.socyno.base.bscsqlutil.SqlQueryUtil;
 import com.socyno.base.bsctmplutil.EnjoyUtil;
 import com.socyno.stateform.exec.StateFormInvalidStatesException;
 import com.socyno.stateform.exec.StateFormNamedQueryNotFoundException;
-import com.socyno.stateform.service.SimpleLockService;
-import com.socyno.stateform.service.SimpleLogService;
+import com.socyno.stateform.service.PermissionService;
 import com.socyno.stateform.util.StateFormNamedQuery;
 import com.socyno.stateform.util.StateFormQueryBaseEnum;
 import com.socyno.stateform.util.StateFormRevision;
 import com.socyno.webbsc.ctxutil.HttpMessageConverter;
+import com.socyno.webbsc.service.jdbc.SimpleLockService;
+import com.socyno.webbsc.service.jdbc.SimpleLogService;
 
 public abstract class AbstractStateFormServiceWithBaseDao<F extends AbstractStateForm> extends AbstractStateFormService<F> {
     
@@ -48,6 +55,11 @@ public abstract class AbstractStateFormServiceWithBaseDao<F extends AbstractStat
     @Override
     protected AbstractLockService getLockService() {
     	return SimpleLockService.getInstance();
+    }
+    
+    @Override
+    public PermissionService getPermissionService() {
+        return PermissionService.getInstance();
     }
     
     @Override
@@ -369,5 +381,79 @@ public abstract class AbstractStateFormServiceWithBaseDao<F extends AbstractStat
             }
         });
         return (T)result[0];
+    }
+    
+    @Override
+    protected void addMultiChoiceCoveredTargetScopeIds(String event, @NonNull AbstractStateForm form, @NonNull String scopeType,
+            long... coveredTargetScopeIds) throws Exception {
+        if (coveredTargetScopeIds == null || coveredTargetScopeIds.length <= 0) {
+            return;
+        }
+        for (long scopeId : coveredTargetScopeIds) {
+            getFormBaseDao().executeUpdate(SqlQueryUtil.prepareInsertQuery(
+                    "system_form_multiple_choice_status", new ObjectMap()
+                            .put("event", event)
+                            .put("form_id", form.getId())
+                            .put("form_name", getFormName())
+                            .put("scope_id", scopeId)
+                            .put("scope_type", scopeType)
+                            .put("created_at", new Date())
+                            .put("created_code_by", SessionContext.getTokenUsername())
+                            .put("state_form_revision", form.getRevision())
+                            .put("created_by" , SessionContext.getUserId())
+                            .put("created_name_by" , SessionContext.getDisplay())
+                            .put("deleted", 0)
+            ));
+        }
+    }
+    
+    /**
+     * SELECT DISTINCT
+     *     s.scope_id
+     * FROM
+     *     system_form_multiple_choice_status s
+     * WHERE
+     *     s.event = ?
+     * AND
+     *     s.form_id = ?
+     * AND
+     *     s.form_name = ?
+     * AND
+     *     s.deleted = 0
+     */
+    @Multiline
+    private static final String SQL_QUERY_MULTIPLE_COVERED_TARGET = "X";
+    
+    @Override
+    protected long[] queryMultipleChoiceCoveredTargetScopeIds(String event, @NonNull AbstractStateForm form) throws Exception {
+        return ConvertUtil.asNonNullUniquePrimitiveLongArray(getFormBaseDao().queryAsList(Long.class,
+                SQL_QUERY_MULTIPLE_COVERED_TARGET, new Object[] { event, form.getId(), getFormName() }).toArray());
+    }
+    
+    /**
+     * UPDATE
+     *     system_form_multiple_choice_status s
+     * SET
+     *     s.deleted = 1
+     * WHERE
+     *     s.form_id = ?
+     * AND
+     *     s.form_name = ?
+     */
+    @Multiline
+    private static final String SQL_CLEAN_MULTIPLE_COVERED_TARGET = "X";
+    
+    @Override
+    public void cleanMultipleChoiceTargetScopeIds(String[] clearEvents, @NonNull AbstractStateForm form)
+            throws Exception {
+        List<Object> args = new ArrayList<>();
+        StringBuilder sql = new StringBuilder().append(SQL_CLEAN_MULTIPLE_COVERED_TARGET);
+        if (clearEvents != null && clearEvents.length > 0) {
+            args.addAll(Arrays.asList(clearEvents));
+            sql.append(" AND s.event IN ").append(StringUtils.join("?", clearEvents.length, ",", "(", ")"));
+        }
+        args.add(0, getFormName());
+        args.add(0, form.getId());
+        getFormBaseDao().executeUpdate(sql.toString(), args.toArray());
     }
 }

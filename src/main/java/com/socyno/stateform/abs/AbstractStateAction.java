@@ -2,8 +2,8 @@ package com.socyno.stateform.abs;
 
 import com.socyno.base.bscmixutil.ClassUtil;
 import com.socyno.base.bscmixutil.ClassUtil.FieldAttribute;
-import com.socyno.stateform.authority.Authority;
 import com.socyno.stateform.util.StateFormSimpleChoice;
+import com.socyno.webbsc.authority.Authority;
 
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -62,12 +62,13 @@ public abstract class AbstractStateAction<S extends AbstractStateForm, F extends
     private final String[] sourceStates;
     private final AbstractStateChoice targetState;
     
-    private void setEventContext(AbstractStateFormService<S> service, String event, String message, NameValuePair ...params) {
+    private void setEventContext(AbstractStateFormService<S> service, String event, String message,
+            NameValuePair... params) {
         if (CONTEXT_FORM_SERVICE.get() == null) {
             CONTEXT_FORM_SERVICE.set(new EventContext(service, event, message, params));
             return;
         }
-        CONTEXT_FORM_SERVICE.get().setService(service).setEvent(event).setMessage(message);
+        CONTEXT_FORM_SERVICE.get().setService(service).setEvent(event).setMessage(message).setParams(params);
     }
     
     private void clearEventContext() {
@@ -110,7 +111,7 @@ public abstract class AbstractStateAction<S extends AbstractStateForm, F extends
     }
     
     public boolean isListEvent() {
-        return (this instanceof AbstractStateListAction) || (this instanceof AbstractStateCreateAction);
+        return isCreateEvent() || (this instanceof AbstractStateListAction);
     }
     
     public boolean isCreateEvent() {
@@ -425,5 +426,21 @@ public abstract class AbstractStateAction<S extends AbstractStateForm, F extends
             }
         }
         return state;
+    }
+    
+    /**
+     * 标识当前事件是否与给定流程单相关
+     * @param originForm
+     * @return
+     */
+    public boolean flowMatched(S originForm) {
+        return true;
+    }
+    
+    /**
+     * 是否允许 Hanlde 返回 NULL 值
+     */
+    public boolean allowHandleReturnNull() {
+        return true;
     }
 }

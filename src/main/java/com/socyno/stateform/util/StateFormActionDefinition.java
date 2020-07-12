@@ -4,7 +4,7 @@ import com.google.gson.annotations.Expose;
 import com.socyno.base.bscmixutil.ClassUtil;
 import com.socyno.stateform.abs.AbstractStateAction;
 import com.socyno.stateform.abs.AbstractStateAction.EventFormType;
-import com.socyno.stateform.authority.Authority;
+import com.socyno.webbsc.authority.Authority;
 
 import lombok.Data;
 import lombok.NonNull;
@@ -32,6 +32,8 @@ public class StateFormActionDefinition {
     private Authority authority;
     
     private boolean asyncEvent;
+    
+    private boolean createEvent;
     
     private boolean listEvent;
     
@@ -62,6 +64,7 @@ public class StateFormActionDefinition {
                 .setTargetState(action.getTargetStateForDisplay())
                 .setSourceStates(action.getSourceStates())
                 .setAsyncEvent(action.isAsyncEvent())
+                .setCreateEvent(action.isCreateEvent())
                 .setPrepareRequired(action.prepareRequired())
                 .setConfirmRequired(action.confirmRequired())
                 .setMessageRequired(action.messageRequired())

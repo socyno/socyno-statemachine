@@ -78,5 +78,21 @@ public abstract class AbstractStateChoice {
         return t.getTargetState();
     }
     
+    /**
+     * 检测当给定表单是否与选择器的分支相关。
+     * 其目的在于绘制实列流程图时，是否需要保留该选择器的分支。
+     * @param form
+     * @param yesNo
+     * @return
+     */
+    public boolean flowMatched(AbstractStateForm form, boolean yesNo) {
+        return true;
+    }
+    
+    /**
+     * 选择器的走向选择逻辑，当该方法返回 true 则接下来走向 tureState, 否则走向 falseState。
+     * @param form
+     * @return
+     */
     protected abstract boolean select(AbstractStateForm form) throws Exception;
 }
