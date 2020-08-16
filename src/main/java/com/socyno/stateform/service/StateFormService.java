@@ -17,7 +17,6 @@ import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
 import lombok.ToString;
-import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 
 import org.adrianwalker.multilinestring.Multiline;
@@ -70,11 +69,14 @@ import com.socyno.webbsc.service.jdbc.SimpleLogService;
 public class StateFormService {
     
     @Data
-    @Accessors(chain=true)
     private static class CommonStateFormInstance {
-        private String formName;
-        private String formDisplay;
-        private AbstractStateFormServiceWithBaseDao<?> serviceInstance;
+        private final CommonStateFormRegister form;
+        private final AbstractStateFormServiceWithBaseDao<?> serviceInstance;
+        
+        CommonStateFormInstance(CommonStateFormRegister form, AbstractStateFormServiceWithBaseDao<?> serviceInstance) {
+            this.form = form;
+            this.serviceInstance = serviceInstance;
+        }
     }
     
     private static final Map<String, CommonStateFormInstance> STATE_FORM_INSTANCES
@@ -160,6 +162,7 @@ public class StateFormService {
         private String formDisplay;
         private String formBackend;
         private Integer disabled;
+        private String visibleActions;
         
         public boolean isEnabled() {
             return disabled == null || disabled == 0;
@@ -180,10 +183,11 @@ public class StateFormService {
         }
         getDao().executeUpdate(SqlQueryUtil.prepareInsertQuery(
             "system_form_defined", new ObjectMap()
-                    .put("form_name", register.getFormName().trim())
-                    .put("form_backend", register.getFormBackend().trim())
-                    .put("form_display", register.getFormDisplay().trim())
-                    .put("form_service", register.getFormService().trim())
+                .put("form_name", StringUtils.trimToEmpty(register.getFormName()))
+                .put("form_backend", StringUtils.trimToEmpty(register.getFormBackend()))
+                .put("form_display", StringUtils.trimToEmpty(register.getFormDisplay()))
+                .put("form_service", StringUtils.trimToEmpty(register.getFormService()))
+                .put("visible_actions", StringUtils.trimToEmpty(register.getVisibleActions()))
         ));
     }
     
@@ -206,6 +210,7 @@ public class StateFormService {
                     .put("form_display", register.getFormDisplay().trim())
                     .put("form_service", register.getFormService().trim())
                     .put("disabled", CommonUtil.ifNull(register.getDisabled(), 0) == 0 ? 0 : 1)
+                    .put("visible_actions", StringUtils.trimToEmpty(register.getVisibleActions()))
         ));
         /* 完成更新后需要清除表单的缓存实例，确保访问时可重新加载 */
         STATE_FORM_INSTANCES.remove(register.getFormName());
@@ -370,12 +375,7 @@ public class StateFormService {
         }
         serviceObject.getPermissionService().saveAuthorityEntitisForConfig(form.getFormName(), authorities);
         log.info("完成解析并验证通用流程定义: {}", form);
-        
-        
-        STATE_FORM_INSTANCES.put(form.getFormName(), new CommonStateFormInstance()
-                            .setFormName(form.getFormName())
-                            .setFormDisplay(form.getFormDisplay())
-                            .setServiceInstance(serviceObject));
+        STATE_FORM_INSTANCES.put(form.getFormName(), new CommonStateFormInstance(form, serviceObject));
     }
     
     private static CommonStateFormInstance getStateFormInstance(String formName) throws Exception {
@@ -413,12 +413,14 @@ public class StateFormService {
         }
         return new StateFormSimpleDefinition()
                     .setStates(service.getStates())
-                    .setName(instance.getFormName())
-                    .setTitle(instance.getFormDisplay())
+                    .setName(instance.getForm().getFormName())
+                    .setTitle(instance.getForm().getFormDisplay())
                     .setQueries(service.getFormQueryDefinition())
                     .setActions(actions)
                     .setOtherActions(otherActions)
-                    .setFormClass(ClassUtil.classToJson(service.getSingleFormClass()).toString());
+                    .setFormClass(ClassUtil.classToJson(service.getSingleFormClass()).toString())
+                    .setVisibleActions(StringUtils.split(instance.getForm().getVisibleActions(), "[,;\\s]+",
+                            StringUtils.STR_NONBLANK | StringUtils.STR_UNIQUE | StringUtils.STR_TRIMED));
     }
     
     /**
@@ -794,4 +796,51 @@ public class StateFormService {
         return getStateFormInstance(formName).getServiceInstance().queryComments(formId, fromLogIndex);
     }
     
+    /**
+     * 
+     * 自定义状态，操作的显示名称
+     *
+     */
+    @Getter
+    @Setter
+    public static class StateFormAttributeDefined {
+        
+        private String displayKey;
+        
+        private String displayText;
+    }
+    
+    private static final Map<String, String> STATE_FORM_CUSTOMIZED_DISPLAIES = new ConcurrentHashMap<String, String>();
+    
+    synchronized private static void loadCustomizedDisplayText() throws Exception {
+        List<StateFormAttributeDefined> queries = ContextUtil.getBaseDataSource().queryAsList(
+                StateFormAttributeDefined.class, "SELECT display_key, display_text FROM system_form_customized_display",
+                null);
+        if (queries == null || queries.isEmpty()) {
+            return;
+        }
+        for (StateFormAttributeDefined defined : queries) {
+            if (defined == null) {
+                continue;
+            }
+            STATE_FORM_CUSTOMIZED_DISPLAIES.put(defined.getDisplayKey(), defined.getDisplayText());
+        }
+    }
+    
+    public static String getCustomizedDisplayText(String key) {
+        return STATE_FORM_CUSTOMIZED_DISPLAIES.get(key);
+    }
+    
+    static {
+        Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    loadCustomizedDisplayText();
+                } catch (Exception e) {
+                    log.error("Failed to load", e);
+                }
+            }
+        }, 0, 30, TimeUnit.SECONDS);
+    }
 }

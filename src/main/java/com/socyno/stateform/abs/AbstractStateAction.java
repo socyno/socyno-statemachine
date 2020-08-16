@@ -2,6 +2,7 @@ package com.socyno.stateform.abs;
 
 import com.socyno.base.bscmixutil.ClassUtil;
 import com.socyno.base.bscmixutil.ClassUtil.FieldAttribute;
+import com.socyno.stateform.service.StateFormService;
 import com.socyno.stateform.util.StateFormSimpleChoice;
 import com.socyno.webbsc.authority.Authority;
 
@@ -57,9 +58,12 @@ public abstract class AbstractStateAction<S extends AbstractStateForm, F extends
     
     private static final String[] InternalFields = new String[] {"id", "state", "revision"};
     
+    @Getter(AccessLevel.NONE)
     private final String display;
+    
     @Getter(AccessLevel.NONE)
     private final String[] sourceStates;
+    
     private final AbstractStateChoice targetState;
     
     private void setEventContext(AbstractStateFormService<S> service, String event, String message,
@@ -90,6 +94,15 @@ public abstract class AbstractStateAction<S extends AbstractStateForm, F extends
     @SuppressWarnings("unchecked")
     protected AbstractStateFormService<S> getContextFormService() {
         return (AbstractStateFormService<S>) CONTEXT_FORM_SERVICE.get().getService();
+    }
+    
+    public final String getDisplay() {
+        String stateDisplay;
+        if (StringUtils
+                .isNotBlank(stateDisplay = StateFormService.getCustomizedDisplayText(this.getClass().getName()))) {
+            return stateDisplay;
+        }
+        return this.display;
     }
     
     public AbstractStateAction(String display, String sourceState, String targetState) {

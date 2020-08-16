@@ -15,7 +15,6 @@ import org.apache.http.NameValuePair;
 import java.util.Set;
 
 import com.github.reinert.jjschema.v1.FieldOption;
-import com.github.reinert.jjschema.v1.FieldSimpleOption;
 import com.socyno.base.bscexec.MessageException;
 import com.socyno.base.bscmixutil.ArrayUtils;
 import com.socyno.base.bscmixutil.ClassUtil;
@@ -61,7 +60,7 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public abstract class AbstractStateFormService<S extends AbstractStateForm> {
     
-    private final Map<String, String> states = new HashMap<>();
+    private final Map<String, StateFormStateBaseEnum> states = new HashMap<>();
     
     private final Map<String, StateFormNamedQuery<? extends S>> queries = new HashMap<>();
     
@@ -138,16 +137,15 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
             return;
         }
         for (StateFormStateBaseEnum s : states) {
-            setState(s.getCode(), s.getName());
+            setState(s);
         }
     }
     
-    private void setState(String name, String display) {
-        if (StringUtils.isBlank(name)) {
-            states.remove(name);
+    private void setState(StateFormStateBaseEnum state) {
+        if (state == null) {
             return;
         }
-        states.put(name, display);
+        states.put(state.getCode(), state);
     }
     
     /**
@@ -187,15 +185,8 @@ public abstract class AbstractStateFormService<S extends AbstractStateForm> {
     /**
      * 获取状态可选项清单
      */
-    @SuppressWarnings("serial")
     public List<? extends FieldOption> getStates() {
-        return new ArrayList<FieldSimpleOption>() {
-            {
-                for (Map.Entry<String, String> s : states.entrySet()) {
-                    add(new FieldSimpleOption(s.getKey(), s.getValue()));
-                }
-            }
-        };
+        return new ArrayList<>(states.values());
     }
     
     /**

@@ -1,5 +1,7 @@
 package com.socyno.stateform.abs;
 
+import com.socyno.base.bscmixutil.StringUtils;
+
 public interface AbstractStateForm {
     
     public Long getId();
@@ -13,4 +15,8 @@ public interface AbstractStateForm {
     public String getState();
     
     public void setState(String state);
+    
+    public default String getSummary() {
+        return StringUtils.leftPad("" + getId(), 8, "0");
+    }
 }
