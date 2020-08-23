@@ -146,7 +146,7 @@ public class StateFormService {
     private final static FormCustomDataCacher FORM_DATA_CACHER = new FormCustomDataCacher();
     
     static {
-        Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(FORM_DATA_CACHER, 20, 30,
+        Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(FORM_DATA_CACHER, 5, 30,
                 TimeUnit.SECONDS);
     }
     

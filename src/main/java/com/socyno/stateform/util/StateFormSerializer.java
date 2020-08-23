@@ -6,6 +6,7 @@ import java.lang.reflect.Type;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.github.reinert.jjschema.v1.FieldOption;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSerializationContext;
@@ -37,6 +38,11 @@ public class StateFormSerializer implements JsonSerializer<AbstractStateForm> {
             JsonElement jsoned = context.serialize(mapped);
             if (jsoned != null && jsoned.isJsonObject()) {
                 ((JsonObject) jsoned).addProperty("summary", ((AbstractStateForm) obj).getSummary());
+                if (obj instanceof FieldOption) {
+                    ((JsonObject)jsoned).addProperty("optionGroup", ((FieldOption)obj).getOptionGroup());
+                    ((JsonObject)jsoned).addProperty("optionValue", ((FieldOption)obj).getOptionValue());
+                    ((JsonObject)jsoned).addProperty("optionDisplay", ((FieldOption)obj).getOptionDisplay());
+                }
             }
             return jsoned;
         } catch (RuntimeException e) {
